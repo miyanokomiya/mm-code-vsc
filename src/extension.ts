@@ -1,36 +1,29 @@
-'use strict';
+'use strict'
 // The module 'vscode' contains the VS Code extensibility API
 // Import the module and reference it with the alias vscode in your code below
-import * as vscode from 'vscode';
-import {window, commands, Disposable, ExtensionContext, StatusBarAlignment, StatusBarItem, TextDocument, workspace} from 'vscode';
+import * as vscode from 'vscode'
+import {window, commands, Disposable, ExtensionContext, StatusBarAlignment, StatusBarItem, TextDocument, workspace} from 'vscode'
 import axios from 'axios'
-// var WebSocketClient = require('websocket').w3cwebsocket
-const WebSocket = require('ws');
+import { setTimeout } from 'timers';
+const WebSocket = require('ws')
 
 // this method is called when your extension is activated
 // your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
-
-    // Use the console to output diagnostic information (console.log) and errors (console.error)
-    // This line of code will only be executed once when your extension is activated
-    console.log('Congratulations, your extension "mm-code" is now active!');
+    let controller = new WordCounterController()
+    context.subscriptions.push(controller)
 
     // The command has been defined in the package.json file
     // Now provide the implementation of the command with  registerCommand
     // The commandId parameter must match the command field in package.json
-    let disposable = vscode.commands.registerCommand('extension.mmCode', () => {
-        // The code you place here will be executed every time your command is executed
+    context.subscriptions.push(vscode.commands.registerCommand('extension.mmCodeStart', () => {
+        controller.startConnect()
+    }))
 
-        // Display a message box to the user
-        vscode.window.showInformationMessage('started to connect mm-code server');
-    });
-
-    context.subscriptions.push(disposable);
-
-    let controller = new WordCounterController();
-    
-    // WordCounterとWordCounterControllerのリソース開放
-    context.subscriptions.push(controller);
+    context.subscriptions.push(vscode.commands.registerCommand('extension.mmCodeStop', () => {
+        controller.stopConnect()
+        vscode.window.showInformationMessage('MM stopped.')
+    }))
 }
 
 // this method is called when your extension is deactivated
@@ -39,75 +32,95 @@ export function deactivate() {
 
 class WordCounterController {
     
-        private _disposable: Disposable;
-        private _client;
+        private _disposable: Disposable
+        private _statusBarItem: StatusBarItem
+        private _client
+        private _retryLoop: NodeJS.Timer
     
         constructor() {
-            const self = this
-    
-            let subscriptions: Disposable[] = [];
-            window.onDidChangeTextEditorSelection(this._onDidChangeTextEditorSelection, this, subscriptions);
-            window.onDidChangeActiveTextEditor(this._onDidChangeActiveTextEditor, this, subscriptions);
-
-            workspace.onDidChangeTextDocument(function(e1: vscode.TextDocumentChangeEvent) {
-                const updates = []
-                e1.contentChanges.forEach(function(e2: vscode.TextDocumentContentChangeEvent) {
-                    updates.push({
-                        sr: e2.range.start.line,
-                        sc: e2.range.start.character,
-                        er: e2.range.end.line,
-                        ec: e2.range.end.character,
-                        t: e2.text
-                    })
-                })
-
-                self._client.send('updates ' + JSON.stringify({
-                    updates: updates
-                }));
-            })
-            
-    
-            this._disposable = Disposable.from(...subscriptions);
-            
-            this._client = new WebSocket('ws://localhost:8080/ws');
-
-            self._client.onerror = function() {
-                console.log('Connection Error');
-            };
-            
-            self._client.onopen = function() {
-                console.log('WebSocket Client Connected');
-            
-                self._client.send('join ' + JSON.stringify({
-                    name: 'room'
-                }));
-            };
-            
-            self._client.onclose = function() {
-                console.log('echo-protocol Client Closed');
-            };
-            
-            self._client.onmessage = function(e) {
-                const data = JSON.parse(e.data)
-                const type = data.type
-            
-                if (type === 'say') {
-                } else if (type === 'text') {
-                } else if (type === 'line') {
-                } else if (type === 'join') {
-                    // 誰か入室
-                    self._putLatestFile()
-                }
-            };
+            this._statusBarItem = window.createStatusBarItem(StatusBarAlignment.Left)
+            this._statusBarItem.show()
+            this._setStateRun()
         }
     
         dispose() {
-            this._disposable.dispose();
+            this.stopConnect()
+            this._statusBarItem.dispose()
+        }
+
+        stopConnect() {
+            if (this._client) {
+                this._client.close()
+                this._client = null
+            }
+            if (this._disposable) {
+                this._disposable.dispose()
+                this._disposable = null
+            }
+            if (this._retryLoop) {
+                clearTimeout(this._retryLoop)
+                this._retryLoop = null
+            }
+            this._setStateRun()
+        }
+
+        startConnect() {
+            this.stopConnect()
+
+            let subscriptions: Disposable[] = []
+            window.onDidChangeTextEditorSelection(this._onDidChangeTextEditorSelection, this, subscriptions)
+            window.onDidChangeActiveTextEditor(this._onDidChangeActiveTextEditor, this, subscriptions)
+            workspace.onDidChangeTextDocument(this._onDidChangeTextDocument, this, subscriptions)
+            this._disposable = Disposable.from(...subscriptions)
+            
+            this._client = new WebSocket('ws://localhost:8080/ws')
+            this._client.onerror = (e) => {
+                console.log('Connection Error', e)
+                vscode.window.showErrorMessage('Failed to connect MM server. MM will retry after 10 sec.')
+                if (this._retryLoop) {
+                    clearTimeout(this._retryLoop)
+                    this._retryLoop = null
+                }
+                this._retryLoop = setTimeout(() => {
+                    this.startConnect()
+                }, 1000 * 10)
+            }
+            this._client.onopen = () => {
+                console.log('WebSocket Client Connected')
+                vscode.window.showInformationMessage('Succeeded to connect MM server.')
+                this._client.send('join ' + JSON.stringify({
+                    name: 'room'
+                }))
+                this._putLatestFile()
+            }
+            this._client.onclose = () => {
+                console.log('WebSocket Client Closed')
+            }
+            this._client.onmessage = (e) => {
+                const data = JSON.parse(e.data)
+                const type = data.type
+                if (type === 'join') {
+                    // 誰か入室
+                    this._putLatestFile()
+                }
+            }
+
+            this._setStateStop()
+        }
+
+        private _setStateRun() {
+            this._statusBarItem.text = "Run MM"
+            this._statusBarItem.command = "extension.mmCodeStart"
+        }
+        
+        private _setStateStop() {
+            this._statusBarItem.text = "Stop MM"
+            this._statusBarItem.command = "extension.mmCodeStop"
         }
 
         private _getFileData() {
             // アクティブなエディタを取得
-            const editor = window.activeTextEditor;
+            const editor = window.activeTextEditor
             return {
                 fileName: editor ? editor.document.fileName : '',
                 text: editor ? editor.document.getText() : ''
@@ -120,16 +133,13 @@ class WordCounterController {
                 id: id,
                 fileName: data.fileName,
                 text: data.text,
-            }));
-        }
-    
-        private _onDidChangeActiveTextEditor(e: vscode.TextEditor) {
-            this._putLatestFile()
+            }))
+            this._putLine()
         }
         
-        private _onDidChangeTextEditorSelection(e: vscode.TextEditorSelectionChangeEvent) {
+        private _putLine() {
             // アクティブなエディタを取得
-            const editor = e.textEditor;
+            const editor = window.activeTextEditor
             const lineIndex = editor.selection.anchor.line
             const columnIndex = editor.selection.anchor.character
             const lineText = editor.document.lineAt(lineIndex).text
@@ -138,6 +148,31 @@ class WordCounterController {
                 r: lineIndex,
                 c: columnIndex,
                 l: lineText
-            }));
+            }))
+        }
+
+        private _onDidChangeTextDocument(e1: vscode.TextDocumentChangeEvent) {
+            const updates = []
+            e1.contentChanges.forEach((e2: vscode.TextDocumentContentChangeEvent) => {
+                updates.push({
+                    sr: e2.range.start.line,
+                    sc: e2.range.start.character,
+                    er: e2.range.end.line,
+                    ec: e2.range.end.character,
+                    t: e2.text
+                })
+            })
+
+            this._client.send('updates ' + JSON.stringify({
+                updates: updates
+            }))
+        }
+    
+        private _onDidChangeActiveTextEditor(e: vscode.TextEditor) {
+            this._putLatestFile()
+        }
+        
+        private _onDidChangeTextEditorSelection(e: vscode.TextEditorSelectionChangeEvent) {
+            this._putLine()
         }
     }

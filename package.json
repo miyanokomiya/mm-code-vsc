@@ -8,13 +8,17 @@
     "vscode": "^1.18.0"
   },
   "categories": ["Other"],
-  "activationEvents": ["onCommand:extension.mmCode"],
+  "activationEvents": ["*"],
   "main": "./out/extension",
   "contributes": {
     "commands": [
       {
-        "command": "extension.mmCode",
-        "title": "MM Code"
+        "command": "extension.mmCodeStart",
+        "title": "MM Code Start"
+      },
+      {
+        "command": "extension.mmCodeStop",
+        "title": "MM Code Stop"
       }
     ]
   },
