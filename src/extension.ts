@@ -4,8 +4,11 @@
 import * as vscode from 'vscode'
 import {window, commands, Disposable, ExtensionContext, StatusBarAlignment, StatusBarItem, TextDocument, workspace} from 'vscode'
 import axios from 'axios'
-import { setTimeout } from 'timers';
+import { setTimeout } from 'timers'
 const WebSocket = require('ws')
+import * as child_process from 'child_process'
+
+let serverProcess = null
 
 // this method is called when your extension is activated
 // your extension is activated the very first time the command is executed
@@ -17,11 +20,42 @@ export function activate(context: vscode.ExtensionContext) {
     // Now provide the implementation of the command with  registerCommand
     // The commandId parameter must match the command field in package.json
     context.subscriptions.push(vscode.commands.registerCommand('extension.mmCodeStart', () => {
-        controller.startConnect()
+        if (serverProcess) {
+            serverProcess.kill()
+            serverProcess = null
+        }
+
+        // const binPath = '~/.vscode/extensions/mm-code/mm-code'
+        const binPath = '/Users/komiyamatomoya/develop/vscode/mm-code/mm-code/mm-code'
+        serverProcess = child_process.exec(binPath, (error, stdout, stderror) => {
+            // if (error) {
+            //     vscode.window.showErrorMessage('MM failed to start server.')
+            //     if (serverProcess) {
+            //         serverProcess.kill()
+            //         serverProcess = null
+            //     }
+            // } else {
+            //     controller.startConnect()
+            //     vscode.window.showInformationMessage('MM started. using port:8080')
+            // }
+            // TODO 成功してもエラー判定になっている？
+            // サーバーはプロセス動き続けるのでコールバックにこない
+            // controller.startConnect()
+            // vscode.window.showInformationMessage('MM started. using port:8080')
+        });
+        // サーバ準備完了を測れないので適当に待つ
+        setTimeout(() => {
+            controller.startConnect()
+        }, 3000)
+        vscode.window.showInformationMessage('MM started. using port:8090')
     }))
 
     context.subscriptions.push(vscode.commands.registerCommand('extension.mmCodeStop', () => {
         controller.stopConnect()
+        if (serverProcess) {
+            serverProcess.kill()
+            serverProcess = null
+        }
         vscode.window.showInformationMessage('MM stopped.')
     }))
 }
@@ -46,6 +80,10 @@ class WordCounterController {
         dispose() {
             this.stopConnect()
             this._statusBarItem.dispose()
+            if (serverProcess) {
+                serverProcess.kill()
+                serverProcess = null
+            }
         }
 
         stopConnect() {
@@ -73,21 +111,21 @@ class WordCounterController {
             workspace.onDidChangeTextDocument(this._onDidChangeTextDocument, this, subscriptions)
             this._disposable = Disposable.from(...subscriptions)
             
-            this._client = new WebSocket('ws://localhost:8080/ws')
+            this._client = new WebSocket('ws://localhost:8090/ws')
             this._client.onerror = (e) => {
                 console.log('Connection Error', e)
-                vscode.window.showErrorMessage('Failed to connect MM server. MM will retry after 10 sec.')
+                vscode.window.showErrorMessage('Failed to connect MM server. MM will retry after 3 sec.')
                 if (this._retryLoop) {
                     clearTimeout(this._retryLoop)
                     this._retryLoop = null
                 }
                 this._retryLoop = setTimeout(() => {
                     this.startConnect()
-                }, 1000 * 10)
+                }, 1000 * 3)
             }
             this._client.onopen = () => {
                 console.log('WebSocket Client Connected')
-                vscode.window.showInformationMessage('Succeeded to connect MM server.')
+                vscode.window.showInformationMessage('MM Client Connected')
                 this._client.send('join ' + JSON.stringify({
                     name: 'room'
                 }))
